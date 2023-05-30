@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -18,15 +19,15 @@ import (
 
 const (
 	createMigrationEvery       = 300 // seconds
-	migrationCreationTimeout   = 60  //seconds
+	migrationCreationTimeout   = 180 //seconds
 	migrationCompletionTimeout = 240 //seconds
 )
 
 var (
 	migrationSpec = neonvmapi.VirtualMachineMigrationSpec{
-		PreventMigrationToSameHost: false,
+		PreventMigrationToSameHost: true,
 		Incremental:                true,
-		AllowPostCopy:              false,
+		AllowPostCopy:              true,
 		AutoConverge:               true,
 		MaxBandwidth:               resource.MustParse("1Gi"),
 		CompletionTimeout:          migrationCompletionTimeout,
@@ -44,6 +45,7 @@ func doMigrations(ctx context.Context, vmName string, vmClient *neonvm.Clientset
 
 		if err = startMigration(ctx, vmName, vmmName, vmClient); err != nil {
 			log.Error(err, "migration start failed", "vmm", vmmName)
+			counters.MigrationStartFails++
 			return
 		}
 		log.Info("migration started", "vmm", vmmName)
@@ -62,16 +64,25 @@ func doMigrations(ctx context.Context, vmName string, vmClient *neonvm.Clientset
 				}
 				switch phase {
 				case neonvmapi.VmmSucceeded:
-					log.Info("migration completed", "vmm", vmmName)
-					if err := stopMigration(ctx, vmmName, vmClient); err != nil {
+					counters.MigrationCompletions++
+					duration := getMigrationDuration(ctx, vmmName, vmClient)
+					if duration != 0 {
+						counters.MigrationDurations = append(counters.MigrationDurations, duration)
+						log.Info("migration completed", "vmm", vmmName, "duration", migrationDurationString(duration))
+					} else {
+						log.Info("migration completed", "vmm", vmmName)
+					}
+					if err := deleteMigration(ctx, vmmName, vmClient); err != nil {
 						log.Error(err, "migration deletion failed", "vmm", vmmName)
 					}
 					return
 				case neonvmapi.VmmFailed:
+					counters.MigrationExecutionFails++
 					log.Info("migration failed", "vmm", vmmName)
 					return
 				}
 			case <-timeout:
+				counters.MigrationTimeouts++
 				log.Info("migration timed out", "vmm", vmmName)
 				return
 			}
@@ -80,7 +91,7 @@ func doMigrations(ctx context.Context, vmName string, vmClient *neonvm.Clientset
 
 	s := gocron.NewScheduler(time.UTC)
 	s.SingletonModeAll()
-	_, err = s.Every(createMigrationEvery).Second().DoWithJobDetails(task, vmName)
+	_, err = s.EveryRandom(1, createMigrationEvery*2).Seconds().StartAt(time.Now().Add(time.Duration(rand.Intn(createMigrationEvery))*time.Second)).DoWithJobDetails(task, vmName)
 	if err != nil {
 		log.Error(err, "migration scheduling failed", "vmm", vmName)
 		return
@@ -130,13 +141,13 @@ LOOP:
 			if err != nil {
 				break
 			}
-			if created.Status.Phase == neonvmapi.VmmRunning {
+			if created.Status.Phase == neonvmapi.VmmRunning || created.Status.Phase == neonvmapi.VmmSucceeded {
 				break LOOP
 			}
 		case <-timeout:
 			err = fmt.Errorf("migration start timed out")
 			// destroy vmm as it not needed
-			stopMigration(ctx, vmmName, vmClient)
+			deleteMigration(ctx, vmmName, vmClient)
 			break LOOP
 		}
 	}
@@ -145,8 +156,15 @@ LOOP:
 }
 
 func getMigrationPhase(ctx context.Context, vmmName string, vmClient *neonvm.Clientset) (neonvmapi.VmmPhase, error) {
-	// get migration
-	vmm, err := vmClient.NeonvmV1().VirtualMachineMigrations(vmNamespace).Get(ctx, vmmName, metav1.GetOptions{})
+	var err error
+	var vmm *neonvmapi.VirtualMachineMigration
+	for try := 1; try <= 30; try++ {
+		vmm, err = vmClient.NeonvmV1().VirtualMachineMigrations(vmNamespace).Get(ctx, vmmName, metav1.GetOptions{})
+		if err == nil || apierrors.IsNotFound(err) {
+			break
+		}
+		time.Sleep(time.Second)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -154,9 +172,27 @@ func getMigrationPhase(ctx context.Context, vmmName string, vmClient *neonvm.Cli
 	return vmm.Status.Phase, nil
 }
 
-func stopMigration(ctx context.Context, vmmName string, vmClient *neonvm.Clientset) error {
+func getMigrationDuration(ctx context.Context, vmmName string, vmClient *neonvm.Clientset) int64 {
 	var err error
+	var vmm *neonvmapi.VirtualMachineMigration
 	for try := 1; try <= 10; try++ {
+		vmm, err = vmClient.NeonvmV1().VirtualMachineMigrations(vmNamespace).Get(ctx, vmmName, metav1.GetOptions{})
+		if (err == nil && vmm.Status.Info.TotalTimeMs != 0) || apierrors.IsNotFound(err) {
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	return vmm.Status.Info.TotalTimeMs
+}
+
+func migrationDurationString(duration int64) string {
+	d := time.Duration(duration) * time.Millisecond
+	return d.String()
+}
+
+func deleteMigration(ctx context.Context, vmmName string, vmClient *neonvm.Clientset) error {
+	var err error
+	for try := 1; try <= 30; try++ {
 		err = vmClient.NeonvmV1().VirtualMachineMigrations(vmNamespace).Delete(ctx, vmmName, metav1.DeleteOptions{})
 		if err == nil || apierrors.IsNotFound(err) {
 			break
@@ -165,9 +201,11 @@ func stopMigration(ctx context.Context, vmmName string, vmClient *neonvm.Clients
 	}
 
 	// ensure vmm was deleted
+	deletionTimeout := 60 //seconds
+	var vmm *neonvmapi.VirtualMachineMigration
 	if err == nil || apierrors.IsNotFound(err) {
-		for try := 1; try <= 10; try++ {
-			_, err = vmClient.NeonvmV1().VirtualMachineMigrations(vmNamespace).Get(ctx, vmmName, metav1.GetOptions{})
+		for try := 1; try <= deletionTimeout; try++ {
+			vmm, err = vmClient.NeonvmV1().VirtualMachineMigrations(vmNamespace).Get(ctx, vmmName, metav1.GetOptions{})
 			if apierrors.IsNotFound(err) {
 				return nil
 			}
@@ -177,5 +215,5 @@ func stopMigration(ctx context.Context, vmmName string, vmClient *neonvm.Clients
 		return err
 	}
 
-	return fmt.Errorf("can't delete vm migration")
+	return fmt.Errorf("can't delete vm migration during %v, phase: %v", time.Duration(deletionTimeout)*time.Second, vmm.Status.Phase)
 }

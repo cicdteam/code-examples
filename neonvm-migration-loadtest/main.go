@@ -21,7 +21,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	neonvmapi "github.com/neondatabase/autoscaling/neonvm/apis/neonvm/v1"
 	neonvm "github.com/neondatabase/autoscaling/neonvm/client/clientset/versioned"
 )
 
@@ -59,8 +58,23 @@ var (
 	kconfig         = flag.String("kube-config", "~/.kube/config", "Path to kuberenetes config. Only required if out-of-cluster.")
 	configMapName   = fmt.Sprintf("%sconfig", vmNamePrefix)
 	vmCount         = flag.Int("vm-count", 3, "number of virtual machines")
-	pgbenchDuration = flag.Int("", 600, "duration of benchmark test in seconds")
+	pgbenchDuration = flag.Int("duration", 600, "duration of benchmark test in seconds")
+	noLoad          = flag.Bool("no-load", false, "do not run pgbench workload")
 )
+
+type stats struct {
+	VmStartFails            int64
+	VmExecutionFails        int64
+	PgbenchStartFails       int64
+	PgbenchExecutionFails   int64
+	MigrationStartFails     int64
+	MigrationExecutionFails int64
+	MigrationCompletions    int64
+	MigrationTimeouts       int64
+	MigrationDurations      []int64
+}
+
+var counters stats
 
 func main() {
 	// define logging options
@@ -92,8 +106,8 @@ func main() {
 		klog.Fatal(err)
 	}
 	// tune Kubernetes client perfomance
-	cfg.QPS = 100
-	cfg.Burst = 200
+	cfg.QPS = 1000
+	cfg.Burst = 2000
 
 	// get k8s client
 	kClient, err := kubernetes.NewForConfig(cfg)
@@ -128,23 +142,33 @@ func main() {
 			var vmIP string
 			vmIP, err = startVM(ctx, vmName, vmClient)
 			if err != nil {
+				counters.VmStartFails++
 				logger.Error(err, "neonvm start failed", "vm", vmName)
-				return
-			}
-			logger.Info("neonvm started", "vm", vmName)
-
-			// start pgbench
-			if err := startPgbenchPod(ctx, vmName, vmIP, kClient); err != nil {
-				logger.Error(err, "pgbench start failed", "pod", fmt.Sprintf("%s-pgbench", vmName))
-				// destroy vm as it not needed
-				if err := stopVM(ctx, vmName, vmClient); err != nil {
-					logger.Error(err, "neonvm stop failed", "vm", vmName)
+				// destroy vm, skip deletion if vm in Failed state (for further investigation)
+				if _, err := deleteVMifNotFailed(ctx, vmName, vmClient); err != nil {
+					logger.Error(err, "neonvm deletion failed", "vm", vmName)
 				} else {
 					logger.Info("neonvm deleted", "vm", vmName)
 				}
 				return
 			}
-			logger.Info("pgbench started", "pod", fmt.Sprintf("%s-pgbench", vmName))
+			logger.Info("neonvm started", "vm", vmName)
+
+			if !*noLoad {
+				// start pgbench
+				if err := startPgbenchPod(ctx, vmName, vmIP, kClient); err != nil {
+					counters.PgbenchStartFails++
+					logger.Error(err, "pgbench start failed", "pod", fmt.Sprintf("%s-pgbench", vmName))
+					// destroy vm as it not needed
+					if err := deleteVM(ctx, vmName, vmClient); err != nil {
+						logger.Error(err, "neonvm stop failed", "vm", vmName)
+					} else {
+						logger.Info("neonvm deleted", "vm", vmName)
+					}
+					return
+				}
+				logger.Info("pgbench started", "pod", fmt.Sprintf("%s-pgbench", vmName))
+			}
 
 			// run migrations loop
 			migrationsStop := make(chan struct{})
@@ -152,57 +176,57 @@ func main() {
 			wg.Add(1)
 			go doMigrations(ctx, vmName, vmClient, &wg, migrationsStop, migrationsDone)
 
-			// check pgbench finished
-			pgbenchDone := make(chan struct{})
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				// check pgbench status every 10 seconds
-				ticker := time.NewTicker(10 * time.Second)
-				defer ticker.Stop()
-				for {
-					select {
-					case <-ticker.C:
-						phase, err := getPgbenchPodPhase(ctx, vmName, kClient)
-						if err != nil {
-							logger.Error(err, "pgbench get phase error", "pod", fmt.Sprintf("%s-pgbench", vmName))
-							break
-						}
-						switch phase {
-						case corev1.PodSucceeded:
-							logger.Info("pgbench succeeded", "pod", fmt.Sprintf("%s-pgbench", vmName))
-							if err := stopPgbenchPod(ctx, vmName, kClient); err != nil {
-								logger.Error(err, "deleting pgbench failed", "pod", fmt.Sprintf("%s-pgbench", vmName))
+			if !*noLoad {
+				// check pgbench finished
+				pgbenchDone := make(chan struct{})
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					// check pgbench status every 10 seconds
+					ticker := time.NewTicker(10 * time.Second)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-ticker.C:
+							phase, err := getPgbenchPodPhase(ctx, vmName, kClient)
+							if err != nil {
+								logger.Error(err, "pgbench get phase error", "pod", fmt.Sprintf("%s-pgbench", vmName))
+								break
 							}
-							close(pgbenchDone)
-							return
-						case corev1.PodFailed:
-							logger.Info("pgbench failed", "pod", fmt.Sprintf("%s-pgbench", vmName))
-							close(pgbenchDone)
-							return
+							switch phase {
+							case corev1.PodSucceeded:
+								logger.Info("pgbench succeeded", "pod", fmt.Sprintf("%s-pgbench", vmName))
+								if err := stopPgbenchPod(ctx, vmName, kClient); err != nil {
+									logger.Error(err, "deleting pgbench failed", "pod", fmt.Sprintf("%s-pgbench", vmName))
+								}
+								close(pgbenchDone)
+								return
+							case corev1.PodFailed:
+								counters.PgbenchExecutionFails++
+								logger.Info("pgbench failed", "pod", fmt.Sprintf("%s-pgbench", vmName))
+								close(pgbenchDone)
+								return
+							}
 						}
 					}
-				}
-			}()
-			<-pgbenchDone
+				}()
+				<-pgbenchDone
+			} else {
+				time.Sleep(time.Duration(*pgbenchDuration) * time.Second)
+			}
 
 			// stopping migrations loop
 			close(migrationsStop)
 			<-migrationsDone
 
 			// destroy vm, skip deletion if vm in Failed state (for further investigation)
-			phase, err := getVmPhase(ctx, vmName, vmClient)
-			if err != nil {
-				logger.Error(err, "neonvm get phase error", "vm", vmName)
-			}
-			if phase != neonvmapi.VmFailed {
-				if err := stopVM(ctx, vmName, vmClient); err != nil {
-					logger.Error(err, "neonvm deletion failed", "vm", vmName)
-				} else {
-					logger.Info("neonvm deleted", "vm", vmName)
-				}
+			if vmWasFailed, err := deleteVMifNotFailed(ctx, vmName, vmClient); err != nil {
+				logger.Error(err, "neonvm deletion failed", "vm", vmName)
 			} else {
-				logger.Info("neonvm deletion skipped", "vm", vmName, "phase", phase)
+				logger.Info("neonvm deleted", "vm", vmName)
+				if vmWasFailed {
+					counters.VmExecutionFails++
+				}
 			}
 		}(loop)
 	} // vm starts loop
@@ -212,7 +236,19 @@ func main() {
 	if err := deleteConfigMap(ctx, kClient); err != nil {
 		logger.Error(err, "configmap with postgresql.conf deletion failed")
 	}
-}
+
+	logger.Info("Statistics",
+		"vm start fails", counters.VmStartFails,
+		"vm execution fails", counters.VmExecutionFails,
+		"pgbench start fails", counters.PgbenchStartFails,
+		"pgbench execution fails", counters.PgbenchExecutionFails,
+		"migration start fails", counters.MigrationStartFails,
+		"migration execution fails", counters.MigrationExecutionFails,
+		"migration completions", counters.MigrationCompletions,
+		"migration min duration", migrationDurationString(durationMin(counters.MigrationDurations)),
+		"migration max duration", migrationDurationString(durationMax(counters.MigrationDurations)),
+		"migration average duration", migrationDurationString(durationAverage(counters.MigrationDurations)))
+} // main
 
 func createConfigMap(ctx context.Context, kClient *kubernetes.Clientset) error {
 	// try to get confogMap form k8s
@@ -255,4 +291,35 @@ func deleteConfigMap(ctx context.Context, kClient *kubernetes.Clientset) error {
 	}
 
 	return nil
+}
+
+func durationAverage(durations []int64) int64 {
+	if len(durations) == 0 {
+		return 0
+	}
+	var s int64
+	for _, d := range durations {
+		s += d
+	}
+	return s / int64(len(durations))
+}
+
+func durationMin(durations []int64) int64 {
+	min := durations[0]
+	for _, value := range durations {
+		if value < min {
+			min = value
+		}
+	}
+	return min
+}
+
+func durationMax(durations []int64) int64 {
+	max := durations[0]
+	for _, value := range durations {
+		if value > max {
+			max = value
+		}
+	}
+	return max
 }

@@ -40,6 +40,11 @@ func startVM(ctx context.Context, vmName string, vmClient *neonvm.Clientset) (st
 		return ip, err
 	}
 
+	var schedulerName string
+	if !*noLoad {
+		schedulerName = "autoscale-scheduler"
+	}
+
 	// define vm spec
 	vm := neonvmapi.VirtualMachine{
 		ObjectMeta: metav1.ObjectMeta{
@@ -53,12 +58,12 @@ func startVM(ctx context.Context, vmName string, vmClient *neonvm.Clientset) (st
 			RunnerPort:                    25183,
 			RestartPolicy:                 neonvmapi.RestartPolicyNever,
 			TerminationGracePeriodSeconds: &[]int64{1}[0],
-			SchedulerName:                 "autoscale-scheduler",
+			SchedulerName:                 schedulerName,
 			Guest: neonvmapi.Guest{
 				CPUs: neonvmapi.CPUs{
 					Min: &[]neonvmapi.MilliCPU{milliCPUsMin}[0],
 					Max: &[]neonvmapi.MilliCPU{milliCPUsMax}[0],
-					Use: &[]neonvmapi.MilliCPU{milliCPUsMax}[0],
+					Use: &[]neonvmapi.MilliCPU{milliCPUsMin}[0],
 				},
 				MemorySlotSize: resource.MustParse(memorySlotSize),
 				MemorySlots: neonvmapi.MemorySlots{
@@ -160,7 +165,7 @@ LOOP:
 	return created.Status.ExtraNetIP, err
 }
 
-func stopVM(ctx context.Context, vmName string, vmClient *neonvm.Clientset) error {
+func deleteVM(ctx context.Context, vmName string, vmClient *neonvm.Clientset) error {
 	var err error
 	for try := 1; try <= 10; try++ {
 		err = vmClient.NeonvmV1().VirtualMachines(vmNamespace).Delete(ctx, vmName, metav1.DeleteOptions{})
@@ -186,6 +191,22 @@ func stopVM(ctx context.Context, vmName string, vmClient *neonvm.Clientset) erro
 	return fmt.Errorf("can't delete vm")
 }
 
+func deleteVMifNotFailed(ctx context.Context, vmName string, vmClient *neonvm.Clientset) (bool, error) {
+	// destroy vm, skip deletion if vm in Failed state (for further investigation)
+	phase, err := getVmPhase(ctx, vmName, vmClient)
+	if err != nil {
+		return false, fmt.Errorf("neonvm get phase failed, error: %v", err)
+	}
+	if phase == neonvmapi.VmFailed {
+		return true, nil
+	}
+	if err := deleteVM(ctx, vmName, vmClient); err != nil {
+		return false, fmt.Errorf("neonvm deletion failed, error: %v", err)
+	}
+
+	return false, nil
+}
+
 func getVmPhase(ctx context.Context, vmName string, vmClient *neonvm.Clientset) (neonvmapi.VmPhase, error) {
 	// get vm
 	vm, err := vmClient.NeonvmV1().VirtualMachines(vmNamespace).Get(ctx, vmName, metav1.GetOptions{})
@@ -198,12 +219,16 @@ func getVmPhase(ctx context.Context, vmName string, vmClient *neonvm.Clientset) 
 
 func labels() map[string]string {
 	l := map[string]string{}
-	l["autoscaling.neon.tech/enabled"] = "true"
+	if !*noLoad {
+		l["autoscaling.neon.tech/enabled"] = "true"
+	}
 	return l
 }
 
 func annotations() map[string]string {
 	a := map[string]string{}
-	a["autoscaling.neon.tech/bounds"] = autoscalingBounds
+	if !*noLoad {
+		a["autoscaling.neon.tech/bounds"] = autoscalingBounds
+	}
 	return a
 }
