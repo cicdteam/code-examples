@@ -26,7 +26,7 @@ const (
 
 	neonvmCacheSize = "1Gi"
 
-	vmCreationTimeout = 60 // seconds
+	vmCreationTimeout = 300 // seconds
 )
 
 func startVM(ctx context.Context, vmName string, vmClient *neonvm.Clientset) (string, error) {
@@ -41,8 +41,18 @@ func startVM(ctx context.Context, vmName string, vmClient *neonvm.Clientset) (st
 	}
 
 	var schedulerName string
-	if !*noLoad {
+	if *autoscale {
 		schedulerName = "autoscale-scheduler"
+	}
+
+	resources := corev1.ResourceRequirements{}
+	if *load {
+		resources.Requests = corev1.ResourceList{
+			corev1.ResourceCPU: *resource.NewMilliQuantity(milliCPUsMin*0.8, resource.DecimalSI),
+		}
+		resources.Limits = corev1.ResourceList{
+			corev1.ResourceCPU: *resource.NewMilliQuantity(milliCPUsMax*1.2, resource.DecimalSI),
+		}
 	}
 
 	// define vm spec
@@ -59,6 +69,7 @@ func startVM(ctx context.Context, vmName string, vmClient *neonvm.Clientset) (st
 			RestartPolicy:                 neonvmapi.RestartPolicyNever,
 			TerminationGracePeriodSeconds: &[]int64{1}[0],
 			SchedulerName:                 schedulerName,
+			PodResources:                  resources,
 			Guest: neonvmapi.Guest{
 				CPUs: neonvmapi.CPUs{
 					Min: &[]neonvmapi.MilliCPU{milliCPUsMin}[0],
@@ -167,7 +178,7 @@ LOOP:
 
 func deleteVM(ctx context.Context, vmName string, vmClient *neonvm.Clientset) error {
 	var err error
-	for try := 1; try <= 10; try++ {
+	for try := 1; try <= 30; try++ {
 		err = vmClient.NeonvmV1().VirtualMachines(vmNamespace).Delete(ctx, vmName, metav1.DeleteOptions{})
 		if err == nil || apierrors.IsNotFound(err) {
 			break
@@ -176,9 +187,11 @@ func deleteVM(ctx context.Context, vmName string, vmClient *neonvm.Clientset) er
 	}
 
 	// ensure vm was deleted
+	deletionTimeout := 60 //seconds
+	var vm *neonvmapi.VirtualMachine
 	if err == nil || apierrors.IsNotFound(err) {
-		for try := 1; try <= 10; try++ {
-			_, err = vmClient.NeonvmV1().VirtualMachines(vmNamespace).Get(ctx, vmName, metav1.GetOptions{})
+		for try := 1; try <= deletionTimeout; try++ {
+			vm, err = vmClient.NeonvmV1().VirtualMachines(vmNamespace).Get(ctx, vmName, metav1.GetOptions{})
 			if apierrors.IsNotFound(err) {
 				return nil
 			}
@@ -188,7 +201,7 @@ func deleteVM(ctx context.Context, vmName string, vmClient *neonvm.Clientset) er
 		return err
 	}
 
-	return fmt.Errorf("can't delete vm")
+	return fmt.Errorf("can't delete vm during %v, phase: %v", time.Duration(deletionTimeout)*time.Second, vm.Status.Phase)
 }
 
 func deleteVMifNotFailed(ctx context.Context, vmName string, vmClient *neonvm.Clientset) (bool, error) {
@@ -219,7 +232,7 @@ func getVmPhase(ctx context.Context, vmName string, vmClient *neonvm.Clientset) 
 
 func labels() map[string]string {
 	l := map[string]string{}
-	if !*noLoad {
+	if *autoscale {
 		l["autoscaling.neon.tech/enabled"] = "true"
 	}
 	return l
@@ -227,7 +240,7 @@ func labels() map[string]string {
 
 func annotations() map[string]string {
 	a := map[string]string{}
-	if !*noLoad {
+	if !*autoscale {
 		a["autoscaling.neon.tech/bounds"] = autoscalingBounds
 	}
 	return a

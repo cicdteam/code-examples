@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	pgbenchInitTimeout = 120 // seconds
+	pgbenchInitTimeout = 300 // seconds
 	pgbenchInitCommand = `set -e
 until pg_isready --dbname=postgres; do sleep 1; done
 createdb bench || true
@@ -65,6 +65,11 @@ func startPgbenchPod(ctx context.Context, vmName string, vmIP string, kClient *k
 						},
 					},
 					Args: []string{"/bin/sh", "-c", pgbenchInitCommand},
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceCPU: resource.MustParse("250m"),
+						},
+					},
 				},
 			},
 			Containers: []corev1.Container{
@@ -84,6 +89,9 @@ func startPgbenchPod(ctx context.Context, vmName string, vmIP string, kClient *k
 					Args: []string{"/bin/sh", "-c", pgbenchCommand},
 					Resources: corev1.ResourceRequirements{
 						Requests: corev1.ResourceList{
+							corev1.ResourceCPU: resource.MustParse("250m"),
+						},
+						Limits: corev1.ResourceList{
 							corev1.ResourceCPU: resource.MustParse("500m"),
 						},
 					},

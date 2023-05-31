@@ -19,8 +19,8 @@ import (
 
 const (
 	createMigrationEvery       = 300 // seconds
-	migrationCreationTimeout   = 180 //seconds
-	migrationCompletionTimeout = 240 //seconds
+	migrationCreationTimeout   = 300 // seconds
+	migrationCompletionTimeout = 600 // seconds
 )
 
 var (
@@ -43,12 +43,15 @@ func doMigrations(ctx context.Context, vmName string, vmClient *neonvm.Clientset
 	task := func(vmName string, job gocron.Job) {
 		vmmName := fmt.Sprintf("%s-%03d", vmName, job.RunCount())
 
+		t := time.Now()
 		if err = startMigration(ctx, vmName, vmmName, vmClient); err != nil {
 			log.Error(err, "migration start failed", "vmm", vmmName)
 			counters.MigrationStartFails++
 			return
 		}
 		log.Info("migration started", "vmm", vmmName)
+		startDuration := int64(time.Now().Sub(t).Round(time.Second).Seconds())
+		counters.MigrationStartDurations = append(counters.MigrationStartDurations, startDuration)
 
 		// status check managed by ticker and timeout timer
 		timeout := time.After(migrationCompletionTimeout * time.Second)

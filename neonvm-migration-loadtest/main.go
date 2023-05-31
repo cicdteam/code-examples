@@ -29,7 +29,7 @@ const (
 	vmNamePrefix = "vm-stress-"
 	vmNamespace  = "default"
 
-	vmLoopDelayMS = 300
+	vmLoopDelayMS = 500
 
 	postgresqlConf = `
 listen_addresses = '*'
@@ -59,19 +59,23 @@ var (
 	configMapName   = fmt.Sprintf("%sconfig", vmNamePrefix)
 	vmCount         = flag.Int("vm-count", 3, "number of virtual machines")
 	pgbenchDuration = flag.Int("duration", 600, "duration of benchmark test in seconds")
-	noLoad          = flag.Bool("no-load", false, "do not run pgbench workload")
+	load            = flag.Bool("load", true, "run pgbench workload")
+	autoscale       = flag.Bool("autoscale", true, "use autoscling")
 )
 
 type stats struct {
 	VmStartFails            int64
 	VmExecutionFails        int64
+	VmStartDurations        []int64
 	PgbenchStartFails       int64
 	PgbenchExecutionFails   int64
+	PgbenchStartDurations   []int64
 	MigrationStartFails     int64
 	MigrationExecutionFails int64
 	MigrationCompletions    int64
 	MigrationTimeouts       int64
 	MigrationDurations      []int64
+	MigrationStartDurations []int64
 }
 
 var counters stats
@@ -121,6 +125,8 @@ func main() {
 		klog.Fatal(err)
 	}
 
+	logger.Info("staring", "load", *load, "autoscale", *autoscale, "vm count", *vmCount, "duration", *pgbenchDuration)
+
 	if err := createConfigMap(ctx, kClient); err != nil {
 		logger.Error(err, "configmap with postgresql.conf create/update failed")
 		os.Exit(255)
@@ -140,6 +146,7 @@ func main() {
 
 			// start vm
 			var vmIP string
+			t := time.Now()
 			vmIP, err = startVM(ctx, vmName, vmClient)
 			if err != nil {
 				counters.VmStartFails++
@@ -153,9 +160,11 @@ func main() {
 				return
 			}
 			logger.Info("neonvm started", "vm", vmName)
-
-			if !*noLoad {
+			startDuration := int64(time.Now().Sub(t).Round(time.Second).Seconds())
+			counters.VmStartDurations = append(counters.VmStartDurations, startDuration)
+			if *load {
 				// start pgbench
+				t := time.Now()
 				if err := startPgbenchPod(ctx, vmName, vmIP, kClient); err != nil {
 					counters.PgbenchStartFails++
 					logger.Error(err, "pgbench start failed", "pod", fmt.Sprintf("%s-pgbench", vmName))
@@ -168,6 +177,8 @@ func main() {
 					return
 				}
 				logger.Info("pgbench started", "pod", fmt.Sprintf("%s-pgbench", vmName))
+				startDuration := int64(time.Now().Sub(t).Round(time.Second).Seconds())
+				counters.PgbenchStartDurations = append(counters.PgbenchStartDurations, startDuration)
 			}
 
 			// run migrations loop
@@ -176,7 +187,7 @@ func main() {
 			wg.Add(1)
 			go doMigrations(ctx, vmName, vmClient, &wg, migrationsStop, migrationsDone)
 
-			if !*noLoad {
+			if *load {
 				// check pgbench finished
 				pgbenchDone := make(chan struct{})
 				wg.Add(1)
@@ -237,17 +248,30 @@ func main() {
 		logger.Error(err, "configmap with postgresql.conf deletion failed")
 	}
 
-	logger.Info("Statistics",
+	logger.Info("statistics",
 		"vm start fails", counters.VmStartFails,
 		"vm execution fails", counters.VmExecutionFails,
 		"pgbench start fails", counters.PgbenchStartFails,
 		"pgbench execution fails", counters.PgbenchExecutionFails,
 		"migration start fails", counters.MigrationStartFails,
 		"migration execution fails", counters.MigrationExecutionFails,
-		"migration completions", counters.MigrationCompletions,
+		"migration completions", counters.MigrationCompletions)
+	logger.Info("vm start durations",
+		"vm start min", durationString(durationMin(counters.VmStartDurations)),
+		"vm start max", durationString(durationMax(counters.VmStartDurations)),
+		"vm start avg", durationString(durationAvg(counters.VmStartDurations)))
+	logger.Info("pgbench start durations",
+		"pgbench start min", durationString(durationMin(counters.PgbenchStartDurations)),
+		"pgbench start max", durationString(durationMax(counters.PgbenchStartDurations)),
+		"pgbench start avg", durationString(durationAvg(counters.PgbenchStartDurations)))
+	logger.Info("migration start durations",
+		"migration start min", durationString(durationMin(counters.MigrationStartDurations)),
+		"migration start max", durationString(durationMax(counters.MigrationStartDurations)),
+		"migration start avg", durationString(durationAvg(counters.MigrationStartDurations)))
+	logger.Info("migration durations",
 		"migration min duration", migrationDurationString(durationMin(counters.MigrationDurations)),
 		"migration max duration", migrationDurationString(durationMax(counters.MigrationDurations)),
-		"migration average duration", migrationDurationString(durationAverage(counters.MigrationDurations)))
+		"migration avg duration", migrationDurationString(durationAvg(counters.MigrationDurations)))
 } // main
 
 func createConfigMap(ctx context.Context, kClient *kubernetes.Clientset) error {
@@ -293,7 +317,7 @@ func deleteConfigMap(ctx context.Context, kClient *kubernetes.Clientset) error {
 	return nil
 }
 
-func durationAverage(durations []int64) int64 {
+func durationAvg(durations []int64) int64 {
 	if len(durations) == 0 {
 		return 0
 	}
@@ -305,6 +329,9 @@ func durationAverage(durations []int64) int64 {
 }
 
 func durationMin(durations []int64) int64 {
+	if len(durations) == 0 {
+		return 0
+	}
 	min := durations[0]
 	for _, value := range durations {
 		if value < min {
@@ -315,6 +342,9 @@ func durationMin(durations []int64) int64 {
 }
 
 func durationMax(durations []int64) int64 {
+	if len(durations) == 0 {
+		return 0
+	}
 	max := durations[0]
 	for _, value := range durations {
 		if value > max {
@@ -322,4 +352,9 @@ func durationMax(durations []int64) int64 {
 		}
 	}
 	return max
+}
+
+func durationString(duration int64) string {
+	d := time.Duration(duration) * time.Second
+	return d.String()
 }
