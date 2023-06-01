@@ -4,16 +4,17 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/VictoriaMetrics/metrics"
 	"go.uber.org/zap/zapcore"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	//	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -64,21 +65,51 @@ var (
 )
 
 type stats struct {
-	VmStartFails            int64
-	VmExecutionFails        int64
 	VmStartDurations        []int64
-	PgbenchStartFails       int64
-	PgbenchExecutionFails   int64
 	PgbenchStartDurations   []int64
-	MigrationStartFails     int64
-	MigrationExecutionFails int64
-	MigrationCompletions    int64
-	MigrationTimeouts       int64
 	MigrationDurations      []int64
 	MigrationStartDurations []int64
 }
 
 var counters stats
+
+type performanceMetrics struct {
+	VmTotal                 *metrics.Counter
+	VmStartFails            *metrics.Counter
+	VmExecutionFails        *metrics.Counter
+	VmStartDuration         *metrics.Summary
+	PgbenchTotal            *metrics.Counter
+	PgbenchStartFails       *metrics.Counter
+	PgbenchExecutionFails   *metrics.Counter
+	PgbenchStartDuration    *metrics.Summary
+	MigrationTotal          *metrics.Counter
+	MigrationStartFails     *metrics.Counter
+	MigrationExecutionFails *metrics.Counter
+	MigrationCompletions    *metrics.Counter
+	MigrationTimeouts       *metrics.Counter
+	MigrationStartDuration  *metrics.Summary
+	MigrationDuration       *metrics.Summary
+}
+
+var (
+	performance = performanceMetrics{
+		VmTotal:                 metrics.NewCounter(`loadtest_vm_running_total`),
+		VmStartFails:            metrics.NewCounter(`loadtest_vm_start_fails_total`),
+		VmExecutionFails:        metrics.NewCounter(`loadtest_vm_execution_fails_total`),
+		VmStartDuration:         metrics.NewSummary(`loadtest_vm_startup_duration_seconds`),
+		PgbenchTotal:            metrics.NewCounter(`loadtest_pgbench_running_total`),
+		PgbenchStartFails:       metrics.NewCounter(`loadtest_pgbench_start_fails_total`),
+		PgbenchExecutionFails:   metrics.NewCounter(`loadtest_pgbench_execution_fails_total`),
+		PgbenchStartDuration:    metrics.NewSummary(`loadtest_pgbench_startup_duration_seconds`),
+		MigrationTotal:          metrics.NewCounter(`loadtest_migration_running_total`),
+		MigrationStartFails:     metrics.NewCounter(`loadtest_migration_start_fails_total`),
+		MigrationExecutionFails: metrics.NewCounter(`loadtest_migration_execution_fails_total`),
+		MigrationCompletions:    metrics.NewCounter(`loadtest_migration_completions_total`),
+		MigrationTimeouts:       metrics.NewCounter(`loadtest_migration_timeouts_total`),
+		MigrationStartDuration:  metrics.NewSummary(`loadtest_migration_startup_duration_seconds`),
+		MigrationDuration:       metrics.NewSummary(`loadtest_migration_duration_total`),
+	}
+)
 
 func main() {
 	// define logging options
@@ -109,7 +140,7 @@ func main() {
 	if err != nil {
 		klog.Fatal(err)
 	}
-	// tune Kubernetes client perfomance
+	// tune Kubernetes client performance
 	cfg.QPS = 1000
 	cfg.Burst = 2000
 
@@ -124,6 +155,12 @@ func main() {
 	if err != nil {
 		klog.Fatal(err)
 	}
+
+	// Expose the registered metrics at `/metrics` path.
+	http.HandleFunc("/metrics", func(w http.ResponseWriter, req *http.Request) {
+		metrics.WritePrometheus(w, true)
+	})
+	go http.ListenAndServe(":9090", nil)
 
 	logger.Info("staring", "load", *load, "autoscale", *autoscale, "vm count", *vmCount, "duration", *pgbenchDuration)
 
@@ -149,7 +186,7 @@ func main() {
 			t := time.Now()
 			vmIP, err = startVM(ctx, vmName, vmClient)
 			if err != nil {
-				counters.VmStartFails++
+				performance.VmStartFails.Inc()
 				logger.Error(err, "neonvm start failed", "vm", vmName)
 				// destroy vm, skip deletion if vm in Failed state (for further investigation)
 				if _, err := deleteVMifNotFailed(ctx, vmName, vmClient); err != nil {
@@ -162,11 +199,13 @@ func main() {
 			logger.Info("neonvm started", "vm", vmName)
 			startDuration := int64(time.Now().Sub(t).Round(time.Second).Seconds())
 			counters.VmStartDurations = append(counters.VmStartDurations, startDuration)
+			performance.VmTotal.Inc()
+			performance.VmStartDuration.UpdateDuration(t)
 			if *load {
 				// start pgbench
 				t := time.Now()
 				if err := startPgbenchPod(ctx, vmName, vmIP, kClient); err != nil {
-					counters.PgbenchStartFails++
+					performance.PgbenchStartFails.Inc()
 					logger.Error(err, "pgbench start failed", "pod", fmt.Sprintf("%s-pgbench", vmName))
 					// destroy vm as it not needed
 					if err := deleteVM(ctx, vmName, vmClient); err != nil {
@@ -179,6 +218,8 @@ func main() {
 				logger.Info("pgbench started", "pod", fmt.Sprintf("%s-pgbench", vmName))
 				startDuration := int64(time.Now().Sub(t).Round(time.Second).Seconds())
 				counters.PgbenchStartDurations = append(counters.PgbenchStartDurations, startDuration)
+				performance.PgbenchTotal.Inc()
+				performance.PgbenchStartDuration.UpdateDuration(t)
 			}
 
 			// run migrations loop
@@ -206,6 +247,7 @@ func main() {
 							}
 							switch phase {
 							case corev1.PodSucceeded:
+								performance.PgbenchTotal.Dec()
 								logger.Info("pgbench succeeded", "pod", fmt.Sprintf("%s-pgbench", vmName))
 								if err := stopPgbenchPod(ctx, vmName, kClient); err != nil {
 									logger.Error(err, "deleting pgbench failed", "pod", fmt.Sprintf("%s-pgbench", vmName))
@@ -213,7 +255,8 @@ func main() {
 								close(pgbenchDone)
 								return
 							case corev1.PodFailed:
-								counters.PgbenchExecutionFails++
+								performance.PgbenchTotal.Dec()
+								performance.PgbenchExecutionFails.Inc()
 								logger.Info("pgbench failed", "pod", fmt.Sprintf("%s-pgbench", vmName))
 								close(pgbenchDone)
 								return
@@ -231,12 +274,13 @@ func main() {
 			<-migrationsDone
 
 			// destroy vm, skip deletion if vm in Failed state (for further investigation)
+			performance.VmTotal.Dec()
 			if vmWasFailed, err := deleteVMifNotFailed(ctx, vmName, vmClient); err != nil {
 				logger.Error(err, "neonvm deletion failed", "vm", vmName)
 			} else {
 				logger.Info("neonvm deleted", "vm", vmName)
 				if vmWasFailed {
-					counters.VmExecutionFails++
+					performance.VmExecutionFails.Inc()
 				}
 			}
 		}(loop)
@@ -249,13 +293,13 @@ func main() {
 	}
 
 	logger.Info("statistics",
-		"vm start fails", counters.VmStartFails,
-		"vm execution fails", counters.VmExecutionFails,
-		"pgbench start fails", counters.PgbenchStartFails,
-		"pgbench execution fails", counters.PgbenchExecutionFails,
-		"migration start fails", counters.MigrationStartFails,
-		"migration execution fails", counters.MigrationExecutionFails,
-		"migration completions", counters.MigrationCompletions)
+		"vm start fails", performance.VmStartFails.Get(),
+		"vm execution fails", performance.VmExecutionFails.Get(),
+		"pgbench start fails", performance.PgbenchStartFails.Get(),
+		"pgbench execution fails", performance.PgbenchExecutionFails.Get(),
+		"migration start fails", performance.MigrationStartFails.Get(),
+		"migration execution fails", performance.MigrationExecutionFails.Get(),
+		"migration completions", performance.MigrationCompletions.Get())
 	logger.Info("vm start durations",
 		"vm start min", durationString(durationMin(counters.VmStartDurations)),
 		"vm start max", durationString(durationMax(counters.VmStartDurations)),

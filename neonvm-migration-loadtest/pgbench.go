@@ -34,7 +34,7 @@ func startPgbenchPod(ctx context.Context, vmName string, vmIP string, kClient *k
 		return nil
 	}
 
-	pgbenchCommand := fmt.Sprintf("pgbench -n -c 16 -j 8 -S -P 10 -T %d bench", *pgbenchDuration)
+	pgbenchCommand := fmt.Sprintf("pgbench --protocol=prepared -n -c 16 -j 8 -S -P 10 -T %d bench", *pgbenchDuration)
 
 	pod := corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{

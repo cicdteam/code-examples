@@ -27,7 +27,7 @@ var (
 	migrationSpec = neonvmapi.VirtualMachineMigrationSpec{
 		PreventMigrationToSameHost: true,
 		Incremental:                true,
-		AllowPostCopy:              true,
+		AllowPostCopy:              false,
 		AutoConverge:               true,
 		MaxBandwidth:               resource.MustParse("1Gi"),
 		CompletionTimeout:          migrationCompletionTimeout,
@@ -46,12 +46,14 @@ func doMigrations(ctx context.Context, vmName string, vmClient *neonvm.Clientset
 		t := time.Now()
 		if err = startMigration(ctx, vmName, vmmName, vmClient); err != nil {
 			log.Error(err, "migration start failed", "vmm", vmmName)
-			counters.MigrationStartFails++
+			performance.MigrationStartFails.Inc()
 			return
 		}
 		log.Info("migration started", "vmm", vmmName)
 		startDuration := int64(time.Now().Sub(t).Round(time.Second).Seconds())
 		counters.MigrationStartDurations = append(counters.MigrationStartDurations, startDuration)
+		performance.MigrationTotal.Inc()
+		performance.MigrationStartDuration.UpdateDuration(t)
 
 		// status check managed by ticker and timeout timer
 		timeout := time.After(migrationCompletionTimeout * time.Second)
@@ -60,17 +62,19 @@ func doMigrations(ctx context.Context, vmName string, vmClient *neonvm.Clientset
 			select {
 			case <-tick:
 				// check migration phase
-				phase, err := getMigrationPhase(ctx, vmmName, vmClient)
+				vmmphase, err := getMigrationPhase(ctx, vmmName, vmClient)
 				if err != nil {
 					log.Error(err, "migration check failed", "vmm", vmmName)
 					break
 				}
-				switch phase {
+				switch vmmphase {
 				case neonvmapi.VmmSucceeded:
-					counters.MigrationCompletions++
+					performance.MigrationCompletions.Inc()
+					performance.MigrationTotal.Dec()
 					duration := getMigrationDuration(ctx, vmmName, vmClient)
 					if duration != 0 {
 						counters.MigrationDurations = append(counters.MigrationDurations, duration)
+						performance.MigrationDuration.Update(float64(duration / 1000)) // duration in milliseconds
 						log.Info("migration completed", "vmm", vmmName, "duration", migrationDurationString(duration))
 					} else {
 						log.Info("migration completed", "vmm", vmmName)
@@ -80,13 +84,18 @@ func doMigrations(ctx context.Context, vmName string, vmClient *neonvm.Clientset
 					}
 					return
 				case neonvmapi.VmmFailed:
-					counters.MigrationExecutionFails++
+					performance.MigrationExecutionFails.Inc()
+					performance.MigrationTotal.Dec()
 					log.Info("migration failed", "vmm", vmmName)
 					return
 				}
 			case <-timeout:
-				counters.MigrationTimeouts++
+				performance.MigrationTimeouts.Inc()
+				performance.MigrationTotal.Dec()
 				log.Info("migration timed out", "vmm", vmmName)
+				if err := deleteMigration(ctx, vmmName, vmClient); err != nil {
+					log.Error(err, "migration deletion failed", "vmm", vmmName)
+				}
 				return
 			}
 		}
@@ -96,7 +105,7 @@ func doMigrations(ctx context.Context, vmName string, vmClient *neonvm.Clientset
 	s.SingletonModeAll()
 	_, err = s.EveryRandom(1, createMigrationEvery*2).Seconds().StartAt(time.Now().Add(time.Duration(rand.Intn(createMigrationEvery))*time.Second)).DoWithJobDetails(task, vmName)
 	if err != nil {
-		log.Error(err, "migration scheduling failed", "vmm", vmName)
+		log.Error(err, "migration scheduling failed", "vm", vmName)
 		return
 	}
 	s.StartAsync()
@@ -118,13 +127,14 @@ func startMigration(ctx context.Context, vmName, vmmName string, vmClient *neonv
 	}
 
 	// define vmm
-	migrationSpec.VmName = vmName
+	spec := migrationSpec
+	spec.VmName = vmName
 	vmm := neonvmapi.VirtualMachineMigration{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      vmmName,
 			Namespace: vmNamespace,
 		},
-		Spec: migrationSpec,
+		Spec: spec,
 	}
 
 	// create vmm

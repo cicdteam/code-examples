@@ -48,10 +48,14 @@ func startVM(ctx context.Context, vmName string, vmClient *neonvm.Clientset) (st
 	resources := corev1.ResourceRequirements{}
 	if *load {
 		resources.Requests = corev1.ResourceList{
-			corev1.ResourceCPU: *resource.NewMilliQuantity(milliCPUsMin*0.8, resource.DecimalSI),
+			corev1.ResourceCPU: *resource.NewMilliQuantity(milliCPUsMin, resource.DecimalSI),
 		}
 		resources.Limits = corev1.ResourceList{
 			corev1.ResourceCPU: *resource.NewMilliQuantity(milliCPUsMax*1.2, resource.DecimalSI),
+		}
+	} else {
+		resources.Requests = corev1.ResourceList{
+			corev1.ResourceCPU: *resource.NewMilliQuantity(10, resource.DecimalSI),
 		}
 	}
 
