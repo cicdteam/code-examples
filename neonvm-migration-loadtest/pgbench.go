@@ -21,10 +21,6 @@ pgbench -i --init-steps=tGp -s 140 bench
 `
 )
 
-var (
-	pgbenchCommand = fmt.Sprintf("pgbench -n -c 16 -j 8 -S -P 10 -T %d bench", *pgbenchDuration)
-)
-
 func startPgbenchPod(ctx context.Context, vmName string, vmIP string, kClient *kubernetes.Clientset) error {
 	podName := fmt.Sprintf("%s-pgbench", vmName)
 	var err error
@@ -37,6 +33,8 @@ func startPgbenchPod(ctx context.Context, vmName string, vmIP string, kClient *k
 		// pbench pod exist, do nothing
 		return nil
 	}
+
+	pgbenchCommand := fmt.Sprintf("pgbench -n -c 16 -j 8 -S -P 10 -T %d bench", *pgbenchDuration)
 
 	pod := corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
