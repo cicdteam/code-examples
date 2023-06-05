@@ -95,6 +95,10 @@ func startVM(ctx context.Context, vmName string, vmClient *neonvm.Clientset) (st
 						Name:  "POSTGRES_HOST_AUTH_METHOD",
 						Value: "trust",
 					},
+					{
+						Name:  "POSTGRES_USER",
+						Value: "cloud_admin", // used by postgres exporter
+					},
 				},
 				Ports: []neonvmapi.Port{
 					{
@@ -105,6 +109,11 @@ func startVM(ctx context.Context, vmName string, vmClient *neonvm.Clientset) (st
 					{
 						Name:     "host-metrics",
 						Port:     9100,
+						Protocol: neonvmapi.ProtocolTCP,
+					},
+					{
+						Name:     "pg-metrics",
+						Port:     9187,
 						Protocol: neonvmapi.ProtocolTCP,
 					},
 					{

@@ -15,7 +15,7 @@ import (
 const (
 	pgbenchInitTimeout = 300 // seconds
 	pgbenchInitCommand = `set -e
-until pg_isready --dbname=postgres; do sleep 1; done
+until pg_isready --dbname=cloud_admin; do sleep 1; done
 createdb bench || true
 pgbench -i --init-steps=tGp -s 140 bench
 `
@@ -59,7 +59,7 @@ func startPgbenchPod(ctx context.Context, vmName string, vmIP string, kClient *k
 						},
 						{
 							Name:  "PGUSER",
-							Value: "postgres",
+							Value: "cloud_admin",
 						},
 					},
 					Args: []string{"/bin/sh", "-c", pgbenchInitCommand},
@@ -81,7 +81,7 @@ func startPgbenchPod(ctx context.Context, vmName string, vmIP string, kClient *k
 						},
 						{
 							Name:  "PGUSER",
-							Value: "postgres",
+							Value: "cloud_admin",
 						},
 					},
 					Args: []string{"/bin/sh", "-c", pgbenchCommand},

@@ -1,0 +1,39 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kube-prometheus-stack-prometheus-neonvm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: neonvm-metrics-reader
+subjects:
+- kind: ServiceAccount
+  name: kube-prometheus-stack-prometheus
+  namespace: monitoring
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  labels:
+    app.kubernetes.io/component: metrics
+    app.kubernetes.io/created-by: neonvm
+    app.kubernetes.io/instance: controller-metrics-monitor
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/name: servicemonitor
+    app.kubernetes.io/part-of: neonvm
+    control-plane: controller
+    release: kube-prometheus-stack
+  name: neonvm-controller-metrics-monitor
+  namespace: neonvm-system
+spec:
+  endpoints:
+  - bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+    path: /metrics
+    port: https
+    scheme: https
+    tlsConfig:
+      insecureSkipVerify: true
+  selector:
+    matchLabels:
+      control-plane: controller
