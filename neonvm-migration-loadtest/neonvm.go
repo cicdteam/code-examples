@@ -41,12 +41,12 @@ func startVM(ctx context.Context, vmName string, vmClient *neonvm.Clientset) (st
 	}
 
 	var schedulerName string
-	if *autoscale {
+	if autoscale {
 		schedulerName = "autoscale-scheduler"
 	}
 
 	resources := corev1.ResourceRequirements{}
-	if *load {
+	if load {
 		resources.Requests = corev1.ResourceList{
 			corev1.ResourceCPU: *resource.NewMilliQuantity(milliCPUsMin, resource.DecimalSI),
 		}
@@ -245,7 +245,7 @@ func getVmPhase(ctx context.Context, vmName string, vmClient *neonvm.Clientset) 
 
 func labels() map[string]string {
 	l := map[string]string{}
-	if *autoscale {
+	if autoscale {
 		l["autoscaling.neon.tech/enabled"] = "true"
 	}
 	return l
@@ -253,7 +253,7 @@ func labels() map[string]string {
 
 func annotations() map[string]string {
 	a := map[string]string{}
-	if !*autoscale {
+	if !autoscale {
 		a["autoscaling.neon.tech/bounds"] = autoscalingBounds
 	}
 	return a

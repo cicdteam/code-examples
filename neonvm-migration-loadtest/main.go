@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -17,8 +15,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/client/config"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
@@ -30,7 +28,7 @@ const (
 	vmNamePrefix = "vm-stress-"
 	vmNamespace  = "default"
 
-	vmLoopDelayMS = 500
+	vmLoopDelayMS = 1000
 
 	postgresqlConf = `
 listen_addresses = '*'
@@ -56,12 +54,12 @@ max_parallel_maintenance_workers = 2
 )
 
 var (
-	kconfig         = flag.String("kube-config", "~/.kube/config", "Path to kuberenetes config. Only required if out-of-cluster.")
 	configMapName   = fmt.Sprintf("%sconfig", vmNamePrefix)
-	vmCount         = flag.Int("vm-count", 3, "number of virtual machines")
-	pgbenchDuration = flag.Int("duration", 600, "duration of benchmark test in seconds")
-	load            = flag.Bool("load", true, "run pgbench workload")
-	autoscale       = flag.Bool("autoscale", true, "use autoscling")
+	vmCount         int
+	pgbenchDuration int
+	load            bool
+	autoscale       bool
+	metricsAddr     string
 )
 
 type stats struct {
@@ -112,6 +110,13 @@ var (
 )
 
 func main() {
+
+	flag.IntVar(&vmCount, "vm-count", 3, "number of virtual machines")
+	flag.IntVar(&pgbenchDuration, "duration", 600, "duration of benchmark test in seconds")
+	flag.BoolVar(&load, "load", true, "run pgbench workload")
+	flag.BoolVar(&autoscale, "autoscale", true, "use autoscling")
+	flag.StringVar(&metricsAddr, "metrics-bind-address", ":9090", "the address the metric endpoint binds to")
+
 	// define logging options
 	opts := zap.Options{
 		Development:     true,
@@ -130,17 +135,12 @@ func main() {
 	// define context with logger
 	ctx := log.IntoContext(context.Background(), logger)
 
-	// resolve tilda in kubeconfig path
-	kcfg := *kconfig
-	if strings.HasPrefix(kcfg, "~/") {
-		dirname, _ := os.UserHomeDir()
-		kcfg = filepath.Join(dirname, kcfg[2:])
-	}
-	cfg, err := clientcmd.BuildConfigFromFlags("", kcfg)
+	// get Kubernetes client and tune performance
+	cfg, err := config.GetConfig()
 	if err != nil {
-		klog.Fatal(err)
+		logger.Error(err, "kubernetes config not found")
+		os.Exit(1)
 	}
-	// tune Kubernetes client performance
 	cfg.QPS = 1000
 	cfg.Burst = 2000
 
@@ -160,9 +160,9 @@ func main() {
 	http.HandleFunc("/metrics", func(w http.ResponseWriter, req *http.Request) {
 		metrics.WritePrometheus(w, true)
 	})
-	go http.ListenAndServe(":9090", nil)
+	go http.ListenAndServe(metricsAddr, nil)
 
-	logger.Info("staring", "load", *load, "autoscale", *autoscale, "vm count", *vmCount, "duration", *pgbenchDuration)
+	logger.Info("staring", "load", load, "autoscale", autoscale, "vm count", vmCount, "duration", pgbenchDuration)
 
 	if err := createConfigMap(ctx, kClient); err != nil {
 		logger.Error(err, "configmap with postgresql.conf create/update failed")
@@ -171,7 +171,7 @@ func main() {
 
 	// vm starts loop
 	var wg sync.WaitGroup
-	for loop := 1; loop <= *vmCount; loop++ {
+	for loop := 1; loop <= vmCount; loop++ {
 		// delay between vm starts
 		time.Sleep(time.Millisecond * vmLoopDelayMS)
 
@@ -201,7 +201,7 @@ func main() {
 			counters.VmStartDurations = append(counters.VmStartDurations, startDuration)
 			performance.VmTotal.Inc()
 			performance.VmStartDuration.UpdateDuration(t)
-			if *load {
+			if load {
 				// start pgbench
 				t := time.Now()
 				if err := startPgbenchPod(ctx, vmName, vmIP, kClient); err != nil {
@@ -228,7 +228,7 @@ func main() {
 			wg.Add(1)
 			go doMigrations(ctx, vmName, vmClient, &wg, migrationsStop, migrationsDone)
 
-			if *load {
+			if load {
 				// check pgbench finished
 				pgbenchDone := make(chan struct{})
 				wg.Add(1)
@@ -266,7 +266,7 @@ func main() {
 				}()
 				<-pgbenchDone
 			} else {
-				time.Sleep(time.Duration(*pgbenchDuration) * time.Second)
+				time.Sleep(time.Duration(pgbenchDuration) * time.Second)
 			}
 
 			// stopping migrations loop

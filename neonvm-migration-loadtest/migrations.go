@@ -18,9 +18,9 @@ import (
 )
 
 const (
-	createMigrationEvery       = 300 // seconds
-	migrationCreationTimeout   = 300 // seconds
-	migrationCompletionTimeout = 600 // seconds
+	createMigrationEvery       = 300  // seconds
+	migrationCreationTimeout   = 300  // seconds
+	migrationCompletionTimeout = 1200 // seconds
 )
 
 var (

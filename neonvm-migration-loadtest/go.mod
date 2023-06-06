@@ -3,8 +3,6 @@ module github.com/cicdteam/code-examples/neonvm-migration-loadtest
 go 1.20
 
 replace (
-	github.com/neondatabase/autoscaling => github.com/neondatabase/autoscaling v0.7.3-alpha3.0.20230523181653-966b28705797
-
 	k8s.io/api => k8s.io/api v0.25.10
 	k8s.io/apiextensions-apiserver => k8s.io/apiextensions-apiserver v0.25.10
 	k8s.io/apimachinery => k8s.io/apimachinery v0.25.10
@@ -15,8 +13,8 @@ replace (
 
 require (
 	github.com/VictoriaMetrics/metrics v1.24.0
-	github.com/go-co-op/gocron v1.28.0
-	github.com/neondatabase/autoscaling v0.0.0-00010101000000-000000000000
+	github.com/go-co-op/gocron v1.28.2
+	github.com/neondatabase/autoscaling v0.9.1-0.20230605213638-ba22c917949c
 	go.uber.org/zap v1.24.0
 	k8s.io/api v0.26.1
 	k8s.io/apimachinery v0.26.1
