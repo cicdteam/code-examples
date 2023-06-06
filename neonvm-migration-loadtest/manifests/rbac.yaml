@@ -1,0 +1,73 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: neonvm-migration-loadtest
+  namespace: default
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: neonvm-migration-loadtest
+  namespace: default
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - create
+  - delete
+  - get
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - create
+  - delete
+  - get
+- apiGroups:
+  - vm.neon.tech
+  resources:
+  - virtualmachinemigrations
+  verbs:
+  - create
+  - delete
+  - get
+- apiGroups:
+  - vm.neon.tech
+  resources:
+  - virtualmachinemigrations/status
+  verbs:
+  - get
+- apiGroups:
+  - vm.neon.tech
+  resources:
+  - virtualmachines
+  verbs:
+  - create
+  - delete
+  - get
+- apiGroups:
+  - vm.neon.tech
+  resources:
+  - virtualmachines/status
+  verbs:
+  - get
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: neonvm-migration-loadtest
+  namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: neonvm-migration-loadtest
+subjects:
+- kind: ServiceAccount
+  name: neonvm-migration-loadtest
+  namespace: default
