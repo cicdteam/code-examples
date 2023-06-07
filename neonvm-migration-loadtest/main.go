@@ -169,6 +169,11 @@ func main() {
 		os.Exit(255)
 	}
 
+	// chill out pause used to inspect VM after load test
+	// just check jow many PostgreSQl instances running after stest and compare with VM count
+	// e.g. if we start 100 VMs but after test 3 failed or stuck we will see only 97 running Postgreses in grafana
+	chillOutPause := time.Millisecond*time.Duration(vmLoopDelayMS*vmCount) + time.Second*time.Duration(300)
+
 	// vm starts loop
 	var wg sync.WaitGroup
 	for loop := 1; loop <= vmCount; loop++ {
@@ -176,7 +181,7 @@ func main() {
 		time.Sleep(time.Millisecond * vmLoopDelayMS)
 
 		wg.Add(1)
-		go func(loop int) {
+		go func(loop int, chillout time.Duration) {
 			defer wg.Done()
 			// generate vm name
 			vmName := fmt.Sprintf("%s%04d", vmNamePrefix, loop)
@@ -273,6 +278,8 @@ func main() {
 			close(migrationsStop)
 			<-migrationsDone
 
+			time.Sleep(chillout)
+
 			// destroy vm, skip deletion if vm in Failed state (for further investigation)
 			performance.VmTotal.Dec()
 			if vmWasFailed, err := deleteVMifNotFailed(ctx, vmName, vmClient); err != nil {
@@ -283,7 +290,7 @@ func main() {
 					performance.VmExecutionFails.Inc()
 				}
 			}
-		}(loop)
+		}(loop, chillOutPause)
 	} // vm starts loop
 
 	wg.Wait()
