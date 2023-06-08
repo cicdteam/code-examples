@@ -130,7 +130,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "min(loadtest_migration_startup_duration_seconds)",
+          "expr": "round(min(loadtest_migration_startup_duration_seconds))",
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
@@ -150,6 +150,7 @@
             "mode": "thresholds"
           },
           "mappings": [],
+          "min": 0,
           "noValue": "-",
           "thresholds": {
             "mode": "absolute",
@@ -197,7 +198,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "avg(loadtest_migration_startup_duration_seconds_sum/loadtest_migration_startup_duration_seconds_count)",
+          "expr": "round(avg(loadtest_migration_startup_duration_seconds_sum/loadtest_migration_startup_duration_seconds_count))",
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
@@ -264,7 +265,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "max(loadtest_migration_startup_duration_seconds)",
+          "expr": "round(max(loadtest_migration_startup_duration_seconds))",
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
@@ -284,6 +285,7 @@
             "mode": "thresholds"
           },
           "mappings": [],
+          "min": 0,
           "noValue": "-",
           "thresholds": {
             "mode": "absolute",
@@ -331,7 +333,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "min(loadtest_migration_duration_total_sum/loadtest_migration_duration_total_count)",
+          "expr": "round(min(loadtest_migration_duration_total_sum/loadtest_migration_duration_total_count), 1)",
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
@@ -351,6 +353,7 @@
             "mode": "thresholds"
           },
           "mappings": [],
+          "min": 0,
           "noValue": "-",
           "thresholds": {
             "mode": "absolute",
@@ -398,7 +401,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "avg(loadtest_migration_duration_total_sum/loadtest_migration_duration_total_count)",
+          "expr": "round(avg(loadtest_migration_duration_total_sum/loadtest_migration_duration_total_count),1)",
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
@@ -418,6 +421,7 @@
             "mode": "thresholds"
           },
           "mappings": [],
+          "min": 0,
           "noValue": "-",
           "thresholds": {
             "mode": "absolute",
@@ -465,7 +469,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "max(loadtest_migration_duration_total{quantile=\"1\"})",
+          "expr": "round(max(loadtest_migration_duration_total{quantile=\"1\"}))",
           "legendFormat": "__auto",
           "range": true,
           "refId": "A"
@@ -946,7 +950,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(pg_up)",
+          "expr": "count(pg_up)",
           "legendFormat": "up",
           "range": true,
           "refId": "A"
@@ -1096,7 +1100,7 @@
           "type": "math"
         }
       ],
-      "title": "Pods",
+      "title": "Running pods",
       "type": "timeseries"
     },
     {
@@ -1290,8 +1294,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -1385,8 +1388,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -1518,8 +1520,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -1624,8 +1625,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -1726,12 +1726,12 @@
             }
           },
           "mappings": [],
+          "min": 0,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -1778,7 +1778,7 @@
           "refId": "A"
         }
       ],
-      "title": "NoenVM Controller: Work Queue Add Rate",
+      "title": "NeonVM Controller: Work Queue Add Rate",
       "type": "timeseries"
     },
     {
@@ -1827,8 +1827,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -1875,7 +1874,7 @@
           "refId": "A"
         }
       ],
-      "title": "NoenVM Controller: Errors rate",
+      "title": "NeonVM Controller: Errors rate",
       "type": "timeseries"
     },
     {
@@ -1924,8 +1923,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
-                "value": null
+                "color": "green"
               },
               {
                 "color": "red",
@@ -1935,7 +1933,27 @@
           },
           "unit": "s"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "smooth"
+            },
+            "properties": [
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 6,
@@ -1963,9 +1981,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum(rate(kubelet_pod_start_duration_seconds_bucket{job=\"kubelet\", metrics_path=\"/metrics\"}[$__rate_interval])) by (le))",
+          "expr": "max(rate(kubelet_pod_start_duration_seconds_sum{job=\"kubelet\", metrics_path=\"/metrics\"}[1m]))",
           "hide": false,
-          "legendFormat": "0.95 percentile",
+          "legendFormat": "average",
           "range": true,
           "refId": "A"
         },
@@ -1975,9 +1993,9 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "max(rate(kubelet_pod_start_duration_seconds_sum{job=\"kubelet\", metrics_path=\"/metrics\"}[$__rate_interval]))",
+          "expr": "max(rate(kubelet_pod_start_duration_seconds_sum{job=\"kubelet\", metrics_path=\"/metrics\"}[10m]))",
           "hide": false,
-          "legendFormat": "average",
+          "legendFormat": "smooth",
           "range": true,
           "refId": "B"
         }
@@ -1994,13 +2012,13 @@
     "list": []
   },
   "time": {
-    "from": "now-1h",
+    "from": "now-3h",
     "to": "now"
   },
   "timepicker": {},
   "timezone": "",
   "title": "Load Test",
   "uid": "dbbf72bb-c3bb-418e-8178-3d3ca0eff5f4",
-  "version": 39,
+  "version": 45,
   "weekStart": ""
 }
