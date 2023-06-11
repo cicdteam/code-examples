@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pod-re-terminator
+  namespace: default
+  labels:
+    app.kubernetes.io/name: pod-re-terminator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pod-re-terminator
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pod-re-terminator
+    spec:
+      serviceAccountName: pod-re-terminator
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 10
+      containers:
+      - name: pod-re-terminator
+        image: andreyneon/pod-re-terminator:latest
+        imagePullPolicy: Always
+        args:
+        - -dryrun=true
+        resources: {}
