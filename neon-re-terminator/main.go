@@ -21,12 +21,15 @@ const (
 	defaultPodsLabelSelector = "neon/component=compute-node"
 	defaultPodsNamespace     = "default"
 	defaultStuckTimeout      = "30s"
+	defaultSchedule          = "*/1 * * * *" // each minute
+	computeNodeContainerName = "compute-node"
 )
 
 var (
 	namespace     string
 	labelSelector string
 	timeout       string
+	schedule      string
 	dryRun        bool
 )
 
@@ -35,6 +38,7 @@ func main() {
 	flag.StringVar(&namespace, "namespace", defaultPodsNamespace, "namespace")
 	flag.StringVar(&labelSelector, "selector", defaultPodsLabelSelector, "selector (label query) to filter on")
 	flag.StringVar(&timeout, "timeout", defaultStuckTimeout, "duration after which to delete pods in terminating state")
+	flag.StringVar(&schedule, "schedule", defaultSchedule, "cron schedule")
 	flag.BoolVar(&dryRun, "dryrun", false, "skip forced pod removal")
 
 	// define logging options
@@ -104,33 +108,51 @@ func main() {
 					}
 				}
 				// check if pod in termination state too long
-				if time.Since(pod.DeletionTimestamp.Time) > t {
-					// seems this pod stuck
-					stuckness = append(stuckness, pod)
+				if time.Since(pod.DeletionTimestamp.Time).Round(time.Second) > t {
+					// seems this pod stuck, but check compute-node container already stopped
+					for _, cs := range pod.Status.ContainerStatuses {
+						if cs.Name == computeNodeContainerName && cs.State.Terminated != nil {
+							// compute-node container termnated
+							stuckness = append(stuckness, pod)
+							break
+						}
+					}
 				}
 			}
 		}
 
 		if len(stuckness) > 0 {
 			for _, pod := range stuckness {
-				logger.Info("candidate for forced removal", "name", pod.Name, "terminating", time.Since(pod.DeletionTimestamp.Time))
+				logger.Info("candidate for forced removal", "name", pod.Name, "terminating", time.Since(pod.DeletionTimestamp.Time).Round(time.Second))
 
-				if !dryRun {
-					if err := c.CoreV1().Pods(namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil {
-						logger.Error(err, "pod deletion error")
-					} else {
-						logger.Info("pod was forcibly removed", "name", pod.Name)
-					}
+				deleteOpts := metav1.DeleteOptions{
+					GracePeriodSeconds: &[]int64{0}[0], // grace=0 mean force deletion
 				}
+				if dryRun {
+					deleteOpts.DryRun = []string{"All"}
+				}
+				if err := c.CoreV1().Pods(namespace).Delete(ctx, pod.Name, deleteOpts); err != nil {
+					logger.Error(err, "pod deletion error")
+				} else {
+					logger.Info("pod was forcibly removed", "name", pod.Name)
+				}
+
 			}
 		} else {
 			logger.Info("there are no pods stuck in termination")
 		}
 	} // task
 
+	logger.Info("starting",
+		"timeout", timeout,
+		"namespace", namespace,
+		"selector", labelSelector,
+		"schedule", schedule,
+		"dryrun", dryRun)
+
 	s := gocron.NewScheduler(time.UTC)
 	s.SingletonModeAll()
-	_, err = s.Cron("*/1 * * * *").Do(task) // every minute
+	_, err = s.Cron(schedule).Do(task)
 	if err != nil {
 		logger.Error(err, "scheduling failed")
 		os.Exit(1)

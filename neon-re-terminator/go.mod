@@ -1,4 +1,4 @@
-module github.com/cicdteam/code-examples/pod-re-terminator
+module github.com/cicdteam/code-examples/neon-re-terminator
 
 go 1.20
 

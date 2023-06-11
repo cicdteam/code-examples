@@ -20,7 +20,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a
 FROM gcr.io/distroless/static:nonroot
 
 WORKDIR /
-COPY --from=builder /workspace/pod-re-terminator .
+COPY --from=builder /workspace/neon-re-terminator .
 USER 65532:65532
 
-ENTRYPOINT ["/pod-re-terminator"]
+ENTRYPOINT ["/neon-re-terminator"]
