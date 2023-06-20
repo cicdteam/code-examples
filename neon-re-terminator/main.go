@@ -86,7 +86,6 @@ func main() {
 	task := func() {
 		listOpts := metav1.ListOptions{
 			LabelSelector: labelSelector,
-			FieldSelector: "status.phase=Running",
 		}
 		podlist, err := c.CoreV1().Pods(namespace).List(ctx, listOpts)
 		if err != nil {
@@ -109,12 +108,19 @@ func main() {
 				}
 				// check if pod in termination state too long
 				if time.Since(pod.DeletionTimestamp.Time).Round(time.Second) > t {
-					// seems this pod stuck, but check compute-node container already stopped
+					// seems this pod stuck, but check compute-node container already stopped or waiting to start
 					for _, cs := range pod.Status.ContainerStatuses {
-						if cs.Name == computeNodeContainerName && cs.State.Terminated != nil {
-							// compute-node container termnated
-							stuckness = append(stuckness, pod)
-							break
+						if cs.Name == computeNodeContainerName {
+							if pod.Status.Phase == corev1.PodRunning && cs.State.Terminated != nil {
+								// compute-node container terminated in running pod
+								stuckness = append(stuckness, pod)
+								break
+							}
+							if pod.Status.Phase == corev1.PodPending && cs.State.Waiting != nil {
+								// compute-node container waiting to start in pending pod
+								stuckness = append(stuckness, pod)
+								break
+							}
 						}
 					}
 				}
