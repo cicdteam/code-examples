@@ -30,10 +30,9 @@ const (
 	dbConnTimeout = "1m0s"
 	// SQL Query used to place some load to CPUS in compute-nodes
 	heavySqlQuery = "SELECT SUM(t.generate_series) FROM (SELECT * FROM generate_series(1, 10000000)) t;"
-	//heavySqlQuery = `select length(factorial(length(factorial(1223)::text)/2)::text);`
 	// duration for heavy SQL query
 	heavySqlQueryDuration = "3m0s"
-	// puse between heavy SQL query series
+	// pause between heavy SQL query series
 	heavySqlQueryPause = "1m0s"
 	// how many queries run in parallel
 	parallelism = 32
@@ -48,6 +47,8 @@ const (
 var (
 	// count of computes to run
 	count int
+	// Neon region used for tests
+	region string
 	// duration for load-tests
 	duration string
 	// place heavy workload or just start computes
@@ -61,12 +62,12 @@ var (
 
 	// provisioner and region where create projects
 	provisioner neon.Provisioner = neon.K8sNeonvm
-	region      string           = "aws-us-east-2"
 )
 
 func main() {
 
 	flag.IntVar(&count, "count", 3, "number of Neon projects to create")
+	flag.StringVar(&region, "region", "aws-eu-west-1", "Neon region where to run computes")
 	flag.StringVar(&duration, "duration", "5m0s", "duration of test")
 	flag.BoolVar(&load, "load", true, "run heavy sql workload")
 	flag.Float64Var(&minCU, "min-cu", 0.25, "minimal autoscaling compute units")
@@ -138,11 +139,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	logger.Info("staring", "count", count, "duration", duration, "load", load, "minCU", minCU, "maxCU", maxCU)
+	logger.Info("staring", "count", count, "region", region, "duration", duration, "load", load, "minCU", minCU, "maxCU", maxCU)
 	var wg sync.WaitGroup
 	for loop := 1; loop <= count; loop++ {
 		wg.Add(1)
-		go runLoadTest(ctx, &wg, client, fmt.Sprintf("%s%d", namePrefix, loop), d, load, minCU, maxCU)
+		go runLoadTest(ctx, &wg, client, fmt.Sprintf("%s%04d", namePrefix, loop), d, load, minCU, maxCU)
 		time.Sleep(time.Millisecond * loopDelayMS)
 	}
 	wg.Wait()
@@ -167,6 +168,7 @@ func runLoadTest(ctx context.Context, wg *sync.WaitGroup, client *neon.Client, n
 
 	s := time.Now()
 	for {
+		// check if we should finish load tests
 		if time.Since(s) >= d {
 			break
 		}
@@ -181,7 +183,9 @@ func runLoadTest(ctx context.Context, wg *sync.WaitGroup, client *neon.Client, n
 
 		// sleep some random time (from heavySqlQueryPause to 2*heavySqlQueryPause) between wokload series
 		sleep := pause + time.Duration(rand.Intn(int(pause.Seconds())))*time.Second
-		log.Info("pause workload", "project", p.Project.Name, "duration", sleep)
+		if load {
+			log.Info("pause workload", "project", p.Project.Name, "duration", sleep)
+		}
 		time.Sleep(sleep)
 	}
 
@@ -216,18 +220,26 @@ func runSqlWorkload(ctx context.Context, p *ProjectInfo, load bool) error {
 	}
 	log.Info("db ready", "project", p.Project.Name, "latency", time.Since(t).Round(time.Millisecond))
 
-	if !load {
-		// do nothing and return
-		return nil
-	}
-
-	// run heavy SQL in parallel
+	// run SQL queries in parallel
 	for i := 1; i <= parallelism; i++ {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
 			// run query in the loop until we reach heavySqlQueryDuration
 			start := time.Now()
+			stmt, err := db.PrepareContext(ctx, heavySqlQuery)
+			if err != nil {
+				log.Error(err, "Statement prepare error", "project", p.Project.Name)
+				return
+			}
+			defer stmt.Close()
+			stmtSimple, err := db.PrepareContext(ctx, "SELECT version()")
+			if err != nil {
+				log.Error(err, "Simple statement prepare error", "project", p.Project.Name)
+				return
+			}
+			defer stmtSimple.Close()
+
 			for {
 				// check if we should stop test
 				if time.Since(start) >= d {
@@ -238,10 +250,22 @@ func runSqlWorkload(ctx context.Context, p *ProjectInfo, load bool) error {
 				dbCtx, dbCancel := context.WithTimeout(ctx, d)
 				defer dbCancel()
 
-				// exec query, we not interested in results
-				_, err := db.ExecContext(dbCtx, heavySqlQuery)
-				if err != nil {
-					log.Error(err, "sql query error", "project", p.Project.Name)
+				// exec simple query, we not interested in results
+				_, err = stmtSimple.ExecContext(dbCtx)
+				if err != nil && err.Error() != "pq: canceling statement due to user request" {
+					log.Error(err, "SELECT version() error", "project", p.Project.Name)
+					continue
+				}
+
+				if load {
+					// exec heavy query, we not interested in results
+					_, err := stmt.ExecContext(dbCtx)
+					if err != nil && err.Error() != "pq: canceling statement due to user request" {
+						log.Error(err, "sql query error", "project", p.Project.Name)
+						continue
+					}
+				} else {
+					time.Sleep(time.Second)
 				}
 			}
 		}(i)
