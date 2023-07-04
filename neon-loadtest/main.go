@@ -177,8 +177,7 @@ func runLoadTest(ctx context.Context, wg *sync.WaitGroup, client *neon.Client, n
 			log.Info("starting workload", "project", p.Project.Name, "duration", heavySqlQueryDuration)
 		}
 		if err = runSqlWorkload(ctx, p, load); err != nil {
-			log.Error(err, "fail to run sql workload")
-			return
+			log.Error(err, "fail to run sql workload", "name", p.Project.Name, "id", p.Project.Id)
 		}
 
 		// sleep some random time (from heavySqlQueryPause to 2*heavySqlQueryPause) between wokload series
@@ -215,8 +214,7 @@ func runSqlWorkload(ctx context.Context, p *ProjectInfo, load bool) error {
 	// first - check db connetion
 	t := time.Now()
 	if err := dbPing(ctx, db); err != nil {
-		log.Error(err, "db ping error", "project", p.Project.Name)
-		return err
+		return fmt.Errorf("db ping error: %v", err)
 	}
 	log.Info("db ready", "project", p.Project.Name, "latency", time.Since(t).Round(time.Millisecond))
 
